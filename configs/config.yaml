@@ -1,0 +1,87 @@
+project:
+  name: wsi-survival-predict
+  version: "1.0.0"
+  description: >
+    Weakly supervised whole-slide image survival prediction with
+    morphological heterogeneity modelling using HIPT + Graph Attention Networks.
+  seed: 42
+
+# ─── Data ────────────────────────────────────────────────────────────────────
+data:
+  tcga_project: TCGA-LUAD          # or TCGA-BRCA
+  raw_wsi_dir: data/raw/wsi
+  patch_dir: data/processed/patches
+  feature_dir: data/processed/features
+  graph_dir: data/graphs
+  clinical_csv: data/processed/clinical.csv
+  patch_size: 256                   # pixels at 20x magnification
+  patch_mag: 20                     # magnification level
+  patch_overlap: 0                  # no overlap for efficiency
+  patches_per_slide: 2000           # max patches sampled per WSI
+  tissue_threshold: 0.6             # Otsu threshold: keep if >60% tissue
+  val_fraction: 0.15
+  test_fraction: 0.15
+  num_workers: 4
+
+# ─── Feature extractor (HIPT) ────────────────────────────────────────────────
+feature_extractor:
+  model: hipt_4k                    # HIPT region-level ViT-S/16
+  weights: pretrained/HIPT_4K_feat_extractor.pth
+  embed_dim: 192
+  batch_size: 64
+  fp16: true
+
+# ─── Graph construction ──────────────────────────────────────────────────────
+graph:
+  k_neighbors: 8                    # spatial KNN graph
+  distance_metric: euclidean        # on patch (x,y) coordinates
+  add_self_loops: true
+  heterogeneity_bins: 8             # for heterogeneity entropy computation
+
+# ─── Model ───────────────────────────────────────────────────────────────────
+model:
+  name: HeterogeneityGAT
+  gat_hidden_dim: 256
+  gat_heads: 4
+  gat_layers: 3
+  gat_dropout: 0.25
+  pooling: heterogeneity_aware      # our custom pooling
+  survival_head: cox                # cox | discrete_hazard
+  num_time_bins: 4                  # for discrete hazard mode
+
+# ─── Training ────────────────────────────────────────────────────────────────
+training:
+  epochs: 30
+  batch_size: 1                     # one WSI graph per step (standard MIL)
+  accumulate_grad_batches: 8        # effective batch = 8 slides
+  optimizer: adamw
+  lr: 2.0e-4
+  weight_decay: 1.0e-5
+  scheduler: cosine_with_warmup
+  warmup_epochs: 3
+  loss: negative_log_likelihood     # Cox NLL loss
+  l1_reg: 1.0e-4
+  early_stopping_patience: 10
+  checkpoint_metric: val_cindex
+  checkpoint_mode: max
+  amp: true                         # mixed precision
+
+# ─── Evaluation ──────────────────────────────────────────────────────────────
+evaluation:
+  metrics:
+    - concordance_index
+    - integrated_brier_score
+    - km_stratification
+  n_bootstrap: 1000
+  confidence_level: 0.95
+  km_quantile: 0.5                  # median split for KM curves
+
+# ─── Logging ─────────────────────────────────────────────────────────────────
+logging:
+  results_dir: results
+  log_dir: results/logs
+  checkpoint_dir: results/checkpoints
+  figure_dir: results/figures
+  use_wandb: false
+  wandb_project: wsi-survival
+  log_every_n_steps: 10
